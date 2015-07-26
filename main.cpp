@@ -17,6 +17,7 @@
 #define DResourcesRoot "/home/shared/src/xbx/testbed-openal/data/"
 
 #define ERR(...)    fprintf(stderr, __VA_ARGS__)
+static const float PI = 3.14159f;
 
 static float FromDecibel(float dB)
 {
@@ -135,8 +136,13 @@ static void FreeResources(SResources& _Res)
 #define MGR_MAX_EMITTERS 8
 struct SEmitter {
 	ALuint Source;
-	float dB;
 	bool  active;
+	float dB;
+
+	// spatial
+	float radius;
+	float pos[3];
+	float vel[3];
 };
 
 struct SMgrState {
@@ -196,14 +202,18 @@ static int Mgr_Update(SMgrState& _State)
 		const SEmitter& E = _State.Emitters[i];
 		ALuint s = E.Source;
 		alSourcef(s, AL_GAIN, FromDecibel(E.dB));
+		//alSourcef(s, AL_RADIUS, E.radius);
+		alSource3f(s, AL_POSITION, E.pos[0], E.pos[1], E.pos[2]);
+		alSource3f(s, AL_VELOCITY, E.vel[0], E.vel[1], E.vel[2]);
+
 		ALenum state = AL_STOPPED;
 		alGetSourcei(s, AL_SOURCE_STATE, &state);
+		if (state == AL_PLAYING)
+			cActive ++;
 		if (E.active && state != AL_PLAYING)
 			alSourcePlay(s);
 		else if (!E.active && state != AL_STOPPED)
 			alSourceStop(s);
-		if (state == AL_PLAYING)
-			cActive ++;
 	}
 
 	return cActive;
@@ -221,6 +231,33 @@ static void Mgr_Play(SMgrState& _State, ALuint _Buf, float _dB)
 	alSourcei(s, AL_BUFFER, _Buf);
 	alSourcef(s, AL_GAIN, FromDecibel(_dB));
 	alSourcePlay(s);
+}
+
+
+// ------------------- imgui helper -------------------------
+static float max(float a, float b) { return a>b?a:b; }
+static void ImGuiPointOnMap(const char* id, float*x, float *y, float radius, float ref_size, float center_circle_radius)
+{
+	ImDrawList* draw_list = ImGui::GetWindowDrawList();
+	ImVec2 canvas_pos = ImGui::GetCursorScreenPos();            // ImDrawList API uses screen coordinates!
+	float canvas_radius = 100; //0.5f*max(50.0f,ImGui::GetWindowContentRegionMax().x-ImGui::GetCursorPos().x);
+	ImVec2 canvas_size = ImVec2(2*canvas_radius, 2*canvas_radius);
+	draw_list->AddRectFilledMultiColor(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), ImColor(0,0,0), ImColor(0,0,0), ImColor(5,5,10), ImColor(5,5,10));
+	draw_list->AddRect(canvas_pos, ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y), ImColor(255,255,255));
+	draw_list->AddCircle(ImVec2(canvas_pos.x + canvas_size.x/2, canvas_pos.y + canvas_size.y/2), canvas_radius*(center_circle_radius/ref_size), ImColor(128,128,0));
+	ImGui::InvisibleButton(id, canvas_size);	// (for space allocation and clicks)
+	if (ImGui::IsItemHovered())
+	{
+		ImVec2 mouse_pos_in_canvas = ImVec2(ImGui::GetIO().MousePos.x - canvas_pos.x, ImGui::GetIO().MousePos.y - canvas_pos.y);
+		if (ImGui::GetIO().MouseDown[0] && ImGui::GetIO().MouseDownOwned[0])
+		{
+			(*x) = ref_size * (mouse_pos_in_canvas.x-(canvas_size.x/2))/canvas_radius;
+			(*y) = ref_size * (mouse_pos_in_canvas.y-(canvas_size.y/2))/canvas_radius;
+		}
+	}
+	draw_list->PushClipRect(ImVec4(canvas_pos.x, canvas_pos.y, canvas_pos.x+canvas_size.x, canvas_pos.y+canvas_size.y));      // clip lines within the canvas (if we resize it, etc.)
+	draw_list->AddCircleFilled(ImVec2(canvas_pos.x + canvas_size.x/2 + (*x)*canvas_radius/ref_size, canvas_pos.y + canvas_size.y/2 + (*y)*canvas_radius/ref_size), max(2,radius*canvas_radius/ref_size), 0x88FFFFFF);
+	draw_list->PopClipRect();
 }
 
 // ------------------- Main -------------------------
@@ -306,9 +343,11 @@ int main(int, char**)
 
 		alSourcei(SpatialEmit->Source, AL_BUFFER, Resources.albuf_monoloop);
 		alSourcei(SpatialEmit->Source, AL_LOOPING, AL_TRUE);
-		SpatialEmit->dB = -3.f;
+		SpatialEmit->active = true;
+		SpatialEmit->dB = 0.f;
 		alSourcei(AmbiantLoop->Source, AL_BUFFER, Resources.albuf_stereoloop);
 		alSourcei(AmbiantLoop->Source, AL_LOOPING, AL_TRUE);
+		AmbiantLoop->active = true;
 		AmbiantLoop->dB = -9.f;
 	}
 
@@ -323,6 +362,7 @@ int main(int, char**)
 			if (event.type == SDL_QUIT)
 				done = true;
 		}
+		uint CurTimeMs = SDL_GetTicks();
 		int ActiveSources = Mgr_Update(MgrState);
 
 		ImGui_ImplSdl_NewFrame(sdl_window);
@@ -364,14 +404,10 @@ int main(int, char**)
 		ImGui::Spacing();	// -----------------
 
 		// sound direct test
-		if (ImGui::CollapsingHeader("Direct", NULL, true, true))
+		if (ImGui::CollapsingHeader("Basic", NULL, true, true))
 		{
 			static float mono_gaindB = -3.f;
 			static float stereo_gaindB = -3.f;
-
-			ImGui::Checkbox("Ambiance", &AmbiantLoop->active);
-			ImGui::SameLine();
-			ImGui::SliderFloat("##vol0", &AmbiantLoop->dB, -60, 6, "%.1fdB");
 
 			if (ImGui::Button("Play mono"))
 			{
@@ -390,12 +426,57 @@ int main(int, char**)
 
 		ImGui::Spacing();	// -----------------
 
-		// sound spatialized
+		// Direct
+		if (ImGui::CollapsingHeader("Direct", NULL, true, true))
+		{
+			ImGui::Checkbox("Ambiance", &AmbiantLoop->active);
+			ImGui::SameLine();
+			ImGui::SliderFloat("##vol0", &AmbiantLoop->dB, -60, 6, "%.1fdB");
+		}
+
+		ImGui::Spacing();	// -----------------
+
+		// Spatialized
 		if (ImGui::CollapsingHeader("Spatialized", NULL, true, true))
 		{
 			ImGui::Checkbox("Mosquito", &SpatialEmit->active);
 			ImGui::SameLine();
 			ImGui::SliderFloat("##vol4", &SpatialEmit->dB, -60, 6, "%.1fdB");
+			ImGui::InputFloat("radius", &SpatialEmit->radius);
+
+			static uint PrevTime = -1;
+			static float PrevPos[3];
+			static bool automove = true;
+			ImGui::Checkbox("Auto move", &automove);
+			if (automove) {
+				struct SLocal {
+					static void anim(float t, float v[3]) {
+						float w = (t*2*PI);
+						v[0] = 5*sinf(w*2+1) + 3*sinf(w*6+2) + 2*sinf(w*6+3) + 1*sinf(w*9+4);
+						v[1] = 5*sinf(w*3+5) + 3*sinf(w*4+6) + 2*sinf(w*7+7) + 1*sinf(w*8+8);
+						v[2] = 5*sinf(w*4+9) + 3*sinf(w*5+1) + 2*sinf(w*8+2) + 1*sinf(w*7+3);
+					}
+				};
+
+				float t = (CurTimeMs % 60000) / 60000.f;
+				SLocal::anim(t, SpatialEmit->pos);
+			}
+
+			ImGui::InputFloat3("pos", SpatialEmit->pos);
+			ImGui::InputFloat3("vel", SpatialEmit->vel);
+			ImGuiPointOnMap("top", &SpatialEmit->pos[0], &SpatialEmit->pos[2], SpatialEmit->radius, 10, 0.25f);
+			ImGui::SameLine();
+			ImGuiPointOnMap("front", &SpatialEmit->pos[0], &SpatialEmit->pos[1], SpatialEmit->radius, 10, 0.25f);
+
+			if (PrevTime != -1 && CurTimeMs > PrevTime) {
+				float dt = 0.001f*(CurTimeMs-PrevTime);
+				float k = 1.f;
+				SpatialEmit->vel[0] = k * ((SpatialEmit->pos[0] - PrevPos[0]) / dt);
+				SpatialEmit->vel[1] = k * ((SpatialEmit->pos[1] - PrevPos[1]) / dt);
+				SpatialEmit->vel[2] = k * ((SpatialEmit->pos[2] - PrevPos[2]) / dt);
+			}
+			PrevTime = CurTimeMs;
+			memcpy(PrevPos, SpatialEmit->pos, sizeof(PrevPos));
 		}
 
 		ImGui::Spacing();	// -----------------

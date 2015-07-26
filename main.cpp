@@ -5,6 +5,7 @@
 #include <SDL_opengl.h>
 
 #include <AL/al.h>
+#include <AL/alc.h>
 #include <AL/alext.h>
 
 #include <imgui.h>
@@ -123,6 +124,45 @@ int main(int, char**)
 	// Setup ImGui binding
 	ImGui_ImplSdl_Init(sdl_window);
 
+	// OpenAL: Open and initialize a device with default settings
+	// and set current context, making the program ready to call OpenAL functions.
+	ALCdevice*	alc_device = NULL;
+	ALCcontext*	alc_ctx = NULL;
+	const char*	alc_device_spec = NULL;
+	const char*	alc_ext = NULL;
+	const char*	al_vendor = NULL;
+	const char*	al_renderer = NULL;
+	const char*	al_version = NULL;
+	const char*	al_ext = NULL;
+	{
+		alc_device = alcOpenDevice(NULL);
+		if(!alc_device)
+		{
+			ERR("Could not open a device!\n");
+			return 1;
+		}
+
+		alc_ctx = alcCreateContext(alc_device, NULL);
+		if(alc_ctx == NULL || alcMakeContextCurrent(alc_ctx) == ALC_FALSE)
+		{
+			if(alc_ctx != NULL)
+				alcDestroyContext(alc_ctx);
+			alcCloseDevice(alc_device);
+			ERR("Could not set a context!\n");
+			return 1;
+		}
+
+		alc_device_spec = alcGetString(alc_device, ALC_DEVICE_SPECIFIER);
+		alc_ext = alcGetString(alc_device, ALC_EXTENSIONS);
+		//alcGetIntegerv(alc_device, ALC_MAJOR_VERSION, 1, &alc_major);
+		//alcGetIntegerv(alc_device, ALC_MINOR_VERSION, 1, &alc_minor);
+
+		al_vendor = alGetString(AL_VENDOR);
+		al_renderer = alGetString(AL_RENDERER);
+		al_version = alGetString(AL_VERSION);
+		al_ext = alGetString(AL_EXTENSIONS);
+	}
+
 	// Load resource
 	SResources Resources;
 	bool ok = LoadResources(Resources);
@@ -146,19 +186,37 @@ int main(int, char**)
 				done = true;
 		}
 		ImGui_ImplSdl_NewFrame(sdl_window);
+		ImGui::SetNextWindowPos(ImVec2(10, 10));
+		ImGui::SetNextWindowSize(ImVec2(500, 700));
+		ImGui::Begin("main", NULL, ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove);
 
+		// Openal info:
+		ImGui::Spacing();
+		if (ImGui::CollapsingHeader("OpenAL info"))
 		{
-			ImGui::SetNextWindowPos(ImVec2(10, 10));
-			ImGui::Begin("main", NULL, ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_AlwaysAutoResize);
+			ImGui::Columns(2, "OpenAL_info");
+			ImGui::Text("device");			ImGui::NextColumn();	ImGui::TextWrapped(alc_device_spec);	ImGui::NextColumn();
+			ImGui::Text("vendor");			ImGui::NextColumn();	ImGui::TextWrapped(al_vendor);			ImGui::NextColumn();
+			ImGui::Text("renderer");		ImGui::NextColumn();	ImGui::TextWrapped(al_renderer);		ImGui::NextColumn();
+			ImGui::Text("version");			ImGui::NextColumn();	ImGui::TextWrapped(al_version);			ImGui::NextColumn();
+			ImGui::Separator();
+			ImGui::Text("ALC extensions");	ImGui::NextColumn();	ImGui::TextWrapped(alc_ext);			ImGui::NextColumn();
+			ImGui::Separator();
+			ImGui::Text("AL extensions");	ImGui::NextColumn();	ImGui::TextWrapped(al_ext);				ImGui::NextColumn();
+			ImGui::Columns(1);
+		}
 
+		// Test stuff
+		ImGui::Spacing();
+		{
 			static float f = 0.0f;
-			ImGui::Text("Hello, world!");
 			ImGui::SliderFloat("float", &f, 0.0f, 1.0f);
 			ImGui::ColorEdit3("clear color", (float*)&clear_color);
 			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
-
-			ImGui::End();
+			//ImGui::ShowTestWindow();
 		}
+
+		ImGui::End();
 
 		// Rendering
 		glViewport(0, 0, (int)ImGui::GetIO().DisplaySize.x, (int)ImGui::GetIO().DisplaySize.y);
@@ -169,6 +227,14 @@ int main(int, char**)
 	}
 
 	FreeResources(Resources);
+
+
+	// OpenAL: cleanup
+	{
+		alcMakeContextCurrent(NULL);
+		alcDestroyContext(alc_ctx);
+		alcCloseDevice(alc_device);
+	}
 
 	// Cleanup
 	ImGui_ImplSdl_Shutdown();

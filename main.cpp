@@ -1,6 +1,8 @@
 // testing tools for openal
 
 #include <stdio.h>
+#include <math.h>
+
 #include <SDL.h>
 #include <SDL_opengl.h>
 
@@ -16,23 +18,29 @@
 
 #define ERR(...)    fprintf(stderr, __VA_ARGS__)
 
+static float FromDecibel(float dB)
+{
+	float Gain = exp10f(dB / 20.f);
+	return Gain < 0.0001f ? 0 : Gain;
+}
+
+static float ToDecibel(float gain)
+{
+	if (gain <= .001f) // -60dB
+		return -60.f;
+	else
+		return 20.f * log10f(gain);
+}
 
 // -------------------  LoadSound -------------------------
-struct SWavData {
-	ALenum format;
-	ALsizei size;
-	ALsizei freq;
-	const ALvoid *data;
-};
-
-bool LoadSound(const char* name, SWavData& _Wav)
+static ALuint LoadSound(const char* name)
 {
 	SDL_AudioSpec wav_spec;
 	Uint32 wav_length;
 	Uint8 *wav_buffer;
 	if (SDL_LoadWAV(name, &wav_spec, &wav_buffer, &wav_length) == NULL) {
 		ERR("LoadSound(%s): SDL_LoadWAV failed: %s\n", name, SDL_GetError());
-		return false;
+		return 0;
 	}
 
 	ALenum format = 0;
@@ -54,21 +62,30 @@ bool LoadSound(const char* name, SWavData& _Wav)
 		// TODO: if needed, more channels / other formats.
 		ERR("LoadSound(%s): Unsupported format (TODO): 0x%X\n", name, wav_spec.format);
 		SDL_FreeWAV(wav_buffer);
-		return false;
+		return 0;
 	}
 
-	_Wav.data = wav_buffer;
-	_Wav.size = wav_length;
-	_Wav.freq = wav_spec.freq;
-	_Wav.format = format;
-	return true;
+	ALuint buffer;
+	alGenBuffers(1, &buffer);
+	alBufferData(buffer, format, wav_buffer, wav_length, wav_spec.freq);
+	SDL_FreeWAV(wav_buffer);
+
+	ALenum err = alGetError();
+	if(err != AL_NO_ERROR)
+	{
+		ERR("LoadSound(%s): alBufferData Error: %s\n", name, alGetString(err));
+		if(alIsBuffer(buffer))
+			alDeleteBuffers(1, &buffer);
+		return 0;
+	}
+
+	return buffer;
 }
 
-void FreeSound(SWavData& _Wav)
+static void FreeSound(ALuint _Buf)
 {
-	if (_Wav.data)
-		SDL_FreeWAV((Uint8*)_Wav.data);
-	_Wav.data = NULL;
+	if(alIsBuffer(_Buf))
+		alDeleteBuffers(1, &_Buf);
 }
 
 
@@ -77,30 +94,81 @@ void FreeSound(SWavData& _Wav)
 
 struct SResources
 {
-	SWavData wav_mono;
-	SWavData wav_stereo;
+	ALuint	albuf_mono;
+	ALuint	albuf_stereo;
 };
 
-bool LoadResources(SResources& _Res)
+static bool LoadResources(SResources& _Res)
 {
-	bool ok;
-	ok = LoadSound(DResourcesRoot "mono.wav", _Res.wav_mono);
-	if (!ok)
+	_Res.albuf_mono = LoadSound(DResourcesRoot "mono.wav");
+	if (_Res.albuf_mono == 0)
 		return false;
 
-	ok = LoadSound(DResourcesRoot "stereo.wav", _Res.wav_stereo);
-	if (!ok)
+	_Res.albuf_stereo = LoadSound(DResourcesRoot "stereo.wav");
+	if (_Res.albuf_stereo == 0)
 		return false;
 
 	return true;
 }
 
-void FreeResources(SResources& _Res)
+static void FreeResources(SResources& _Res)
 {
-	FreeSound(_Res.wav_mono);
-	FreeSound(_Res.wav_stereo);
+	FreeSound(_Res.albuf_mono);		_Res.albuf_mono = 0;
+	FreeSound(_Res.albuf_stereo);	_Res.albuf_stereo = 0;
 }
 
+
+// ------------------- OpenAl sources manager -------------------------
+#define MGR_MAX_SOURCES 32
+struct SMgrState {
+	ALuint Avail[MGR_MAX_SOURCES];	int cAvail;
+	ALuint Active[MGR_MAX_SOURCES];	int cActive;
+};
+
+static void Mgr_Init(SMgrState& _State)
+{
+	memset(&_State, 0, sizeof(_State));
+	alGenSources(MGR_MAX_SOURCES, _State.Avail);
+	_State.cAvail = MGR_MAX_SOURCES;
+}
+
+static void Mgr_Destroy(SMgrState& _State)
+{
+	if (_State.cActive > 0) {
+		alSourceStopv(_State.cActive, _State.Active);
+		memcpy(_State.Avail + _State.cAvail, _State.Active, _State.cActive*sizeof(ALuint));
+		_State.cActive = 0;
+	}
+	alDeleteSources(_State.cAvail, _State.Avail);
+}
+
+static void Mgr_Update(SMgrState& _State)
+{
+	for (int i = 0; i<_State.cActive; i++) {
+		ALuint s = _State.Active[i];
+		ALenum state = AL_STOPPED;
+		alGetSourcei(s, AL_SOURCE_STATE, &state);
+		if (state != AL_PLAYING) {
+			_State.Avail[_State.cAvail] = s;						_State.cAvail++;
+			_State.Active[i] = _State.Active[_State.cActive-1];		_State.cActive --;
+			i--;
+		}
+	}
+}
+
+static void Mgr_Play(SMgrState& _State, ALuint _Buf, float _dB)
+{
+	if (_State.cAvail == 0) {
+		ERR("Too many sounds\n");
+		return;
+	}
+
+	ALuint s = _State.Avail[_State.cAvail-1];	_State.cAvail--;
+	_State.Active[_State.cActive] = s;			_State.cActive++;
+	alSourcei(s, AL_BUFFER, _Buf);
+	alSourcef(s, AL_GAIN, FromDecibel(_dB));
+	alSourcePlay(s);
+}
 
 // ------------------- Main -------------------------
 
@@ -165,12 +233,16 @@ int main(int, char**)
 
 	// Load resource
 	SResources Resources;
-	bool ok = LoadResources(Resources);
-	if (!ok) {
-		ERR("Could not load all program resource.\n");
-		return 1;
+	{
+		bool ok = LoadResources(Resources);
+		if (!ok) {
+			ERR("Could not load all program resource.\n");
+			return 1;
+		}
 	}
 
+	SMgrState MgrState;
+	Mgr_Init(MgrState);
 
 	ImVec4 clear_color = ImColor(114, 144, 154);
 
@@ -185,13 +257,30 @@ int main(int, char**)
 			if (event.type == SDL_QUIT)
 				done = true;
 		}
+		Mgr_Update(MgrState);
+
 		ImGui_ImplSdl_NewFrame(sdl_window);
+
 		ImGui::SetNextWindowPos(ImVec2(10, 10));
 		ImGui::SetNextWindowSize(ImVec2(500, 700));
 		ImGui::Begin("main", NULL, ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove);
 
+		// top bar.
+		{
+			if (ImGui::Button("Quit"))
+				break;
+
+			ImGui::SameLine();
+
+			static bool ShowImguiHelp = false;
+			ImGui::Checkbox("show imgui help", &ShowImguiHelp);
+			if (ShowImguiHelp)
+				ImGui::ShowTestWindow();		// documentation shortcut
+		}
+
+		ImGui::Spacing();	// -----------------
+
 		// Openal info:
-		ImGui::Spacing();
 		if (ImGui::CollapsingHeader("OpenAL info"))
 		{
 			ImGui::Columns(2, "OpenAL_info");
@@ -206,15 +295,40 @@ int main(int, char**)
 			ImGui::Columns(1);
 		}
 
+		ImGui::Spacing();	// -----------------
+
+		// sound test
+		if (ImGui::CollapsingHeader("Basic test", NULL, true, true))
+		{
+			static float mono_gaindB = -3.f;
+			static float stereo_gaindB = -3.f;
+
+			if (ImGui::Button("Play mono"))
+			{
+				Mgr_Play(MgrState, Resources.albuf_mono, mono_gaindB);
+			}
+			ImGui::SameLine();
+			ImGui::SliderFloat("monogain", &mono_gaindB, -60, 6, "%.1fdB");
+
+			if (ImGui::Button("Play stereo"))
+			{
+				Mgr_Play(MgrState, Resources.albuf_stereo, stereo_gaindB);
+			}
+			ImGui::SameLine();
+			ImGui::SliderFloat("stereogain", &stereo_gaindB, -60, 6, "%.1fdB");
+		}
+
+		ImGui::Spacing();	// -----------------
+
 		// Test stuff
-		ImGui::Spacing();
 		{
 			static float f = 0.0f;
 			ImGui::SliderFloat("float", &f, 0.0f, 1.0f);
 			ImGui::ColorEdit3("clear color", (float*)&clear_color);
 			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
-			//ImGui::ShowTestWindow();
 		}
+
+
 
 		ImGui::End();
 
@@ -226,8 +340,8 @@ int main(int, char**)
 		SDL_GL_SwapWindow(sdl_window);
 	}
 
+	Mgr_Destroy(MgrState);
 	FreeResources(Resources);
-
 
 	// OpenAL: cleanup
 	{

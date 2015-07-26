@@ -202,7 +202,7 @@ static int Mgr_Update(SMgrState& _State)
 		const SEmitter& E = _State.Emitters[i];
 		ALuint s = E.Source;
 		alSourcef(s, AL_GAIN, FromDecibel(E.dB));
-		//alSourcef(s, AL_RADIUS, E.radius);
+		alSourcef(s, AL_SOURCE_RADIUS, E.radius);
 		alSource3f(s, AL_POSITION, E.pos[0], E.pos[1], E.pos[2]);
 		alSource3f(s, AL_VELOCITY, E.vel[0], E.vel[1], E.vel[2]);
 
@@ -343,10 +343,17 @@ int main(int, char**)
 
 		alSourcei(SpatialEmit->Source, AL_BUFFER, Resources.albuf_monoloop);
 		alSourcei(SpatialEmit->Source, AL_LOOPING, AL_TRUE);
+		alSourcei(SpatialEmit->Source, AL_DIRECT_CHANNELS_SOFT, AL_FALSE);
 		SpatialEmit->active = true;
 		SpatialEmit->dB = 0.f;
+		SpatialEmit->pos[0] = .5f;
+		SpatialEmit->pos[1] = .75f;
+		SpatialEmit->pos[2] = -3;
+		SpatialEmit->radius = 0.01f;
+
 		alSourcei(AmbiantLoop->Source, AL_BUFFER, Resources.albuf_stereoloop);
 		alSourcei(AmbiantLoop->Source, AL_LOOPING, AL_TRUE);
+		alSourcei(AmbiantLoop->Source, AL_DIRECT_CHANNELS_SOFT, AL_TRUE);
 		AmbiantLoop->active = true;
 		AmbiantLoop->dB = -9.f;
 	}
@@ -403,7 +410,7 @@ int main(int, char**)
 
 		ImGui::Spacing();	// -----------------
 
-		// sound direct test
+		// basic test
 		if (ImGui::CollapsingHeader("Basic", NULL, true, true))
 		{
 			static float mono_gaindB = -3.f;
@@ -444,9 +451,9 @@ int main(int, char**)
 			ImGui::SliderFloat("##vol4", &SpatialEmit->dB, -60, 6, "%.1fdB");
 			ImGui::InputFloat("radius", &SpatialEmit->radius);
 
-			static uint PrevTime = -1;
+			static uint PrevTime = 0;
 			static float PrevPos[3];
-			static bool automove = true;
+			static bool automove = false;
 			ImGui::Checkbox("Auto move", &automove);
 			if (automove) {
 				struct SLocal {
@@ -468,7 +475,7 @@ int main(int, char**)
 			ImGui::SameLine();
 			ImGuiPointOnMap("front", &SpatialEmit->pos[0], &SpatialEmit->pos[1], SpatialEmit->radius, 10, 0.25f);
 
-			if (PrevTime != -1 && CurTimeMs > PrevTime) {
+			if (PrevTime != 0 && CurTimeMs > PrevTime) {
 				float dt = 0.001f*(CurTimeMs-PrevTime);
 				float k = 1.f;
 				SpatialEmit->vel[0] = k * ((SpatialEmit->pos[0] - PrevPos[0]) / dt);

@@ -96,16 +96,26 @@ struct SResources
 {
 	ALuint	albuf_mono;
 	ALuint	albuf_stereo;
+	ALuint  albuf_monoloop;
+	ALuint  albuf_stereoloop;
 };
 
 static bool LoadResources(SResources& _Res)
 {
-	_Res.albuf_mono = LoadSound(DResourcesRoot "mono.wav");
+	_Res.albuf_mono = LoadSound(DResourcesRoot "drip.wav");
 	if (_Res.albuf_mono == 0)
 		return false;
 
-	_Res.albuf_stereo = LoadSound(DResourcesRoot "stereo.wav");
+	_Res.albuf_stereo = LoadSound(DResourcesRoot "bark.wav");
 	if (_Res.albuf_stereo == 0)
+		return false;
+
+	_Res.albuf_monoloop = LoadSound(DResourcesRoot "mosquitoloop.wav");
+	if (_Res.albuf_monoloop == 0)
+		return false;
+
+	_Res.albuf_stereoloop = LoadSound(DResourcesRoot "rainloop.wav");
+	if (_Res.albuf_stereoloop == 0)
 		return false;
 
 	return true;
@@ -113,16 +123,27 @@ static bool LoadResources(SResources& _Res)
 
 static void FreeResources(SResources& _Res)
 {
-	FreeSound(_Res.albuf_mono);		_Res.albuf_mono = 0;
-	FreeSound(_Res.albuf_stereo);	_Res.albuf_stereo = 0;
+	FreeSound(_Res.albuf_mono);			_Res.albuf_mono = 0;
+	FreeSound(_Res.albuf_stereo);		_Res.albuf_stereo = 0;
+	FreeSound(_Res.albuf_monoloop);		_Res.albuf_monoloop = 0;
+	FreeSound(_Res.albuf_stereoloop);	_Res.albuf_stereoloop = 0;
 }
 
 
 // ------------------- OpenAl sources manager -------------------------
 #define MGR_MAX_SOURCES 32
+#define MGR_MAX_EMITTERS 8
+struct SEmitter {
+	ALuint Source;
+	float dB;
+	bool  active;
+};
+
 struct SMgrState {
-	ALuint Avail[MGR_MAX_SOURCES];	int cAvail;
-	ALuint Active[MGR_MAX_SOURCES];	int cActive;
+	ALuint		Avail[MGR_MAX_SOURCES];		int cAvail;
+	ALuint		Active[MGR_MAX_SOURCES];	int cActive;
+
+	SEmitter	Emitters[MGR_MAX_EMITTERS];
 };
 
 static void Mgr_Init(SMgrState& _State)
@@ -130,6 +151,11 @@ static void Mgr_Init(SMgrState& _State)
 	memset(&_State, 0, sizeof(_State));
 	alGenSources(MGR_MAX_SOURCES, _State.Avail);
 	_State.cAvail = MGR_MAX_SOURCES;
+
+	for (int i=0; i < MGR_MAX_EMITTERS; i++) {
+		ALuint s = _State.Avail[_State.cAvail-1];	_State.cAvail--;
+		_State.Emitters[i].Source = s;
+	}
 }
 
 static void Mgr_Destroy(SMgrState& _State)
@@ -137,13 +163,22 @@ static void Mgr_Destroy(SMgrState& _State)
 	if (_State.cActive > 0) {
 		alSourceStopv(_State.cActive, _State.Active);
 		memcpy(_State.Avail + _State.cAvail, _State.Active, _State.cActive*sizeof(ALuint));
+		_State.cAvail += _State.cActive;
 		_State.cActive = 0;
+	}
+	for (int i=0; i < MGR_MAX_EMITTERS; i++) {
+		ALuint s = _State.Emitters[i].Source;
+		alSourceStop(s);
+		_State.Emitters[i].Source = 0;
+		_State.Avail[_State.cAvail] = s; _State.cAvail ++;
 	}
 	alDeleteSources(_State.cAvail, _State.Avail);
 }
 
-static void Mgr_Update(SMgrState& _State)
+static int Mgr_Update(SMgrState& _State)
 {
+	int cActive = 0;
+
 	for (int i = 0; i<_State.cActive; i++) {
 		ALuint s = _State.Active[i];
 		ALenum state = AL_STOPPED;
@@ -152,8 +187,26 @@ static void Mgr_Update(SMgrState& _State)
 			_State.Avail[_State.cAvail] = s;						_State.cAvail++;
 			_State.Active[i] = _State.Active[_State.cActive-1];		_State.cActive --;
 			i--;
+		} else {
+			cActive ++;
 		}
 	}
+
+	for (int i=0; i < MGR_MAX_EMITTERS; i++) {
+		const SEmitter& E = _State.Emitters[i];
+		ALuint s = E.Source;
+		alSourcef(s, AL_GAIN, FromDecibel(E.dB));
+		ALenum state = AL_STOPPED;
+		alGetSourcei(s, AL_SOURCE_STATE, &state);
+		if (E.active && state != AL_PLAYING)
+			alSourcePlay(s);
+		else if (!E.active && state != AL_STOPPED)
+			alSourceStop(s);
+		if (state == AL_PLAYING)
+			cActive ++;
+	}
+
+	return cActive;
 }
 
 static void Mgr_Play(SMgrState& _State, ALuint _Buf, float _dB)
@@ -241,10 +294,23 @@ int main(int, char**)
 		}
 	}
 
+	// openal sources
 	SMgrState MgrState;
-	Mgr_Init(MgrState);
+	SEmitter* SpatialEmit;
+	SEmitter* AmbiantLoop;
+	{
+		Mgr_Init(MgrState);
 
-	ImVec4 clear_color = ImColor(114, 144, 154);
+		SpatialEmit = &MgrState.Emitters[0];
+		AmbiantLoop = &MgrState.Emitters[1];
+
+		alSourcei(SpatialEmit->Source, AL_BUFFER, Resources.albuf_monoloop);
+		alSourcei(SpatialEmit->Source, AL_LOOPING, AL_TRUE);
+		SpatialEmit->dB = -3.f;
+		alSourcei(AmbiantLoop->Source, AL_BUFFER, Resources.albuf_stereoloop);
+		alSourcei(AmbiantLoop->Source, AL_LOOPING, AL_TRUE);
+		AmbiantLoop->dB = -9.f;
+	}
 
 	// Main loop
 	bool done = false;
@@ -257,7 +323,7 @@ int main(int, char**)
 			if (event.type == SDL_QUIT)
 				done = true;
 		}
-		Mgr_Update(MgrState);
+		int ActiveSources = Mgr_Update(MgrState);
 
 		ImGui_ImplSdl_NewFrame(sdl_window);
 
@@ -297,42 +363,54 @@ int main(int, char**)
 
 		ImGui::Spacing();	// -----------------
 
-		// sound test
-		if (ImGui::CollapsingHeader("Basic test", NULL, true, true))
+		// sound direct test
+		if (ImGui::CollapsingHeader("Direct", NULL, true, true))
 		{
 			static float mono_gaindB = -3.f;
 			static float stereo_gaindB = -3.f;
+
+			ImGui::Checkbox("Ambiance", &AmbiantLoop->active);
+			ImGui::SameLine();
+			ImGui::SliderFloat("##vol0", &AmbiantLoop->dB, -60, 6, "%.1fdB");
 
 			if (ImGui::Button("Play mono"))
 			{
 				Mgr_Play(MgrState, Resources.albuf_mono, mono_gaindB);
 			}
 			ImGui::SameLine();
-			ImGui::SliderFloat("monogain", &mono_gaindB, -60, 6, "%.1fdB");
+			ImGui::SliderFloat("##vol1", &mono_gaindB, -60, 6, "%.1fdB");
 
 			if (ImGui::Button("Play stereo"))
 			{
 				Mgr_Play(MgrState, Resources.albuf_stereo, stereo_gaindB);
 			}
 			ImGui::SameLine();
-			ImGui::SliderFloat("stereogain", &stereo_gaindB, -60, 6, "%.1fdB");
+			ImGui::SliderFloat("##vol2", &stereo_gaindB, -60, 6, "%.1fdB");
 		}
 
 		ImGui::Spacing();	// -----------------
 
-		// Test stuff
+		// sound spatialized
+		if (ImGui::CollapsingHeader("Spatialized", NULL, true, true))
 		{
-			static float f = 0.0f;
-			ImGui::SliderFloat("float", &f, 0.0f, 1.0f);
-			ImGui::ColorEdit3("clear color", (float*)&clear_color);
-			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+			ImGui::Checkbox("Mosquito", &SpatialEmit->active);
+			ImGui::SameLine();
+			ImGui::SliderFloat("##vol4", &SpatialEmit->dB, -60, 6, "%.1fdB");
 		}
 
+		ImGui::Spacing();	// -----------------
 
+		// status
+		{
+			ImGui::Separator();
+			ImGui::Text("Active Sources: %d / %d\n", ActiveSources, MGR_MAX_SOURCES);
+			ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
+		}
 
 		ImGui::End();
 
 		// Rendering
+		ImVec4 clear_color = ImColor(114, 144, 154);
 		glViewport(0, 0, (int)ImGui::GetIO().DisplaySize.x, (int)ImGui::GetIO().DisplaySize.y);
 		glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
 		glClear(GL_COLOR_BUFFER_BIT);

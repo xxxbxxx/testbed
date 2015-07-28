@@ -219,7 +219,7 @@ static int Mgr_Update(SMgrState& _State)
 	return cActive;
 }
 
-static void Mgr_Play(SMgrState& _State, ALuint _Buf, float _dB)
+static void Mgr_Play(SMgrState& _State, ALuint _Buf, float _dB, bool _Direct=false)
 {
 	if (_State.cAvail == 0) {
 		ERR("Too many sounds\n");
@@ -228,8 +228,35 @@ static void Mgr_Play(SMgrState& _State, ALuint _Buf, float _dB)
 
 	ALuint s = _State.Avail[_State.cAvail-1];	_State.cAvail--;
 	_State.Active[_State.cActive] = s;			_State.cActive++;
+
 	alSourcei(s, AL_BUFFER, _Buf);
 	alSourcef(s, AL_GAIN, FromDecibel(_dB));
+	alSourcei(s, AL_LOOPING, AL_FALSE);
+	alSourcei(s, AL_DIRECT_CHANNELS_SOFT, _Direct?AL_TRUE:AL_FALSE);
+	alSourcef(s, AL_SOURCE_RADIUS, 0);
+	alSource3f(s, AL_POSITION, 0, 0, 0);
+	alSource3f(s, AL_VELOCITY, 0, 0, 0);
+
+	alSourcePlay(s);
+}
+static void Mgr_Play(SMgrState& _State, ALuint _Buf, float _dB, const float _Pos[3], float _Radius=0)
+{
+	if (_State.cAvail == 0) {
+		ERR("Too many sounds\n");
+		return;
+	}
+
+	ALuint s = _State.Avail[_State.cAvail-1];	_State.cAvail--;
+	_State.Active[_State.cActive] = s;			_State.cActive++;
+
+	alSourcei(s, AL_BUFFER, _Buf);
+	alSourcef(s, AL_GAIN, FromDecibel(_dB));
+	alSourcei(s, AL_LOOPING, AL_FALSE);
+	alSourcei(s, AL_DIRECT_CHANNELS_SOFT, AL_FALSE);
+	alSourcef(s, AL_SOURCE_RADIUS, _Radius);
+	alSource3f(s, AL_POSITION, _Pos[0], _Pos[1], _Pos[2]);
+	alSource3f(s, AL_VELOCITY, 0, 0, 0);
+
 	alSourcePlay(s);
 }
 
@@ -344,7 +371,7 @@ int main(int, char**)
 		alSourcei(SpatialEmit->Source, AL_BUFFER, Resources.albuf_monoloop);
 		alSourcei(SpatialEmit->Source, AL_LOOPING, AL_TRUE);
 		alSourcei(SpatialEmit->Source, AL_DIRECT_CHANNELS_SOFT, AL_FALSE);
-		SpatialEmit->active = true;
+		SpatialEmit->active = false;
 		SpatialEmit->dB = 0.f;
 		SpatialEmit->pos[0] = .5f;
 		SpatialEmit->pos[1] = .75f;
@@ -354,7 +381,7 @@ int main(int, char**)
 		alSourcei(AmbiantLoop->Source, AL_BUFFER, Resources.albuf_stereoloop);
 		alSourcei(AmbiantLoop->Source, AL_LOOPING, AL_TRUE);
 		alSourcei(AmbiantLoop->Source, AL_DIRECT_CHANNELS_SOFT, AL_TRUE);
-		AmbiantLoop->active = true;
+		AmbiantLoop->active = false;
 		AmbiantLoop->dB = -9.f;
 	}
 
@@ -449,7 +476,7 @@ int main(int, char**)
 			ImGui::Checkbox("Mosquito", &SpatialEmit->active);
 			ImGui::SameLine();
 			ImGui::SliderFloat("##vol4", &SpatialEmit->dB, -60, 6, "%.1fdB");
-			ImGui::InputFloat("radius", &SpatialEmit->radius);
+			ImGui::SliderFloat("radius", &SpatialEmit->radius, 0, 5);
 
 			static uint PrevTime = 0;
 			static float PrevPos[3];
@@ -484,6 +511,47 @@ int main(int, char**)
 			}
 			PrevTime = CurTimeMs;
 			memcpy(PrevPos, SpatialEmit->pos, sizeof(PrevPos));
+		}
+
+		ImGui::Spacing();	// -----------------
+
+		// basic test
+		if (ImGui::CollapsingHeader("Tests", NULL, true, true))
+		{
+			static const float Front[3] = {0,0,-1};
+			if (ImGui::Button("stereo base"))
+			{
+				Mgr_Play(MgrState, Resources.albuf_stereo, -3, false);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("stereo direct"))
+			{
+				Mgr_Play(MgrState, Resources.albuf_stereo, -3, true);
+			}
+			if (ImGui::Button("mono base"))
+			{
+				Mgr_Play(MgrState, Resources.albuf_mono, -3, false);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("mono direct"))
+			{
+				Mgr_Play(MgrState, Resources.albuf_mono, -3, true);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("mono 3d narrow"))
+			{
+				Mgr_Play(MgrState, Resources.albuf_mono, -3, Front, 0.01f);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("mono 3d wide"))
+			{
+				Mgr_Play(MgrState, Resources.albuf_mono, -3, Front, 1.f);
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("mono 3d omni"))
+			{
+				Mgr_Play(MgrState, Resources.albuf_mono, -3, Front, 10.f);
+			}
 		}
 
 		ImGui::Spacing();	// -----------------

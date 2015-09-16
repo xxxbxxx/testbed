@@ -103,7 +103,7 @@ struct SResources
 
 static bool LoadResources(SResources& _Res)
 {
-	_Res.albuf_mono = LoadSound(DResourcesRoot "drip.wav");
+	_Res.albuf_mono = LoadSound(DResourcesRoot "sonar.wav");
 	if (_Res.albuf_mono == 0)
 		return false;
 
